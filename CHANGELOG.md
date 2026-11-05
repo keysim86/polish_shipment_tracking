@@ -8,6 +8,7 @@ The same notes are published with each [GitHub release](https://github.com/radzi
 
 - **GLS: parcels load again.** myGLS moved the parcel list to a paged endpoint, and the old one answers `GLS API Error: 500 - 404 page not found`, so every GLS account stayed in "retrying setup". The list is now read from the new endpoint. Ported from upstream ([stirante#24](https://github.com/stirante/polish_shipment_tracking/issues/24), fixed in stirante 1.10.1).
 - **GLS: renewed tokens are saved even when a poll fails.** They used to be saved only after the parcel list loaded.
+- **Integration icon.** The integration ships its own icon (`brand/icon.png`, `icon@2x.png`): a map pin with a parcel. Home Assistant shows it in the integrations list and in Marketplace; it appears after a restart.
 
 Security and reliability fixes from a code review of 1.11.1:
 
