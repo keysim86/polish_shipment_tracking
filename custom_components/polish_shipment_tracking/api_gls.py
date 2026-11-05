@@ -149,9 +149,11 @@ class GlsApi:
         self._session_registered = self._session_id
 
     async def get_parcels(self, page: int = 0, limit: int = 100, archive: bool = False):
-        """Return the logged-in shipment list."""
-        query = urlencode({"limit": limit, "page": page, "archive": str(archive).lower()})
-        return await self.request("GET", f"{self.TRACKING_SHIPMENT_URL}?{query}")
+        """Return the logged-in shipment list (one page, {"content": [...]})."""
+        # myGLS moved the list to /paged (the old path now answers 500 "404 page
+        # not found"); the page size parameter is "size" there.
+        query = urlencode({"size": limit, "page": page, "archive": str(archive).lower()})
+        return await self.request("GET", f"{self.TRACKING_SHIPMENT_URL}/paged?{query}")
 
     async def get_parcel(self, tracking_uid: str, archive: bool = False):
         """Return details for a specific trackingUid from the shipment list."""

@@ -254,8 +254,10 @@ class ShipmentCoordinator(DataUpdateCoordinator):
         finally:
             # InPost and DPD renew short-lived access tokens in-line, and InPost
             # replaces the refresh token on every refresh: save them even when
-            # the poll failed after the refresh.
+            # the poll failed after the refresh. GLS likewise, so a failing
+            # parcel list does not keep the saved refresh token from advancing.
             self._persist_rotated_auth_if_changed()
+            self._persist_gls_auth_if_changed()
 
     async def _fetch_parcels_with_retry(self):
         """Fetch parcels and retry once if unauthorized."""

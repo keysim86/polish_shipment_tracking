@@ -6,7 +6,10 @@ The same notes are published with each [GitHub release](https://github.com/radzi
 
 ## Unreleased (keysim86 fork)
 
-Security and reliability fixes from a code review of 1.11.1.
+- **GLS: parcels load again.** myGLS moved the parcel list to a paged endpoint, and the old one answers `GLS API Error: 500 - 404 page not found`, so every GLS account stayed in "retrying setup". The list is now read from the new endpoint. Ported from upstream ([stirante#24](https://github.com/stirante/polish_shipment_tracking/issues/24), fixed in stirante 1.10.1).
+- **GLS: renewed tokens are saved even when a poll fails.** They used to be saved only after the parcel list loaded.
+
+Security and reliability fixes from a code review of 1.11.1:
 
 - **Card: parcel data can no longer inject HTML.** The shipment card put sender names, event descriptions, locations and pickup codes into the page without escaping, so a sender name chosen by whoever ships a parcel could run script in the browser of anyone viewing the card. Every value is now escaped, and links and images accept only https (tel: for phone numbers). Logos set in the card config (`courier_logos`) may also be http, `data:image/…` or a Home Assistant path such as `/local/…`.
 - **Card: the QR code is now opt-in.** The QR image is rendered by an external service (quickchart.io), which received the locker QR payload or pickup code in its URL. It is shown only with `show_dialog_qr_code: true`. Cards saved through the editor before this change may already contain `show_dialog_qr_code: true` — switch it off there if you don't want it.
