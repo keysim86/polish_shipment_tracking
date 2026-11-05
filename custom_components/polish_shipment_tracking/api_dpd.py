@@ -1,9 +1,10 @@
 import aiohttp
+import asyncio
 import logging
 import time
 import urllib.parse
 
-from .api_helpers import normalize_phone, request_json
+from .api_helpers import error_detail, normalize_phone, request_json
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,6 +19,8 @@ class DpdApi:
         self._token = None
         self._refresh_token = None
         self._expires_at = 0
+        # Parallel requests that all hit an expired token must refresh it once.
+        self._refresh_lock = asyncio.Lock()
 
     async def request(self, method, url, data=None, headers=None, form_data=None):
         if headers is None:
@@ -25,7 +28,7 @@ class DpdApi:
 
         # Refresh access token if it is about to expire
         if self._token and self._refresh_token and time.time() > self._expires_at - 60:
-            await self.refresh_access_token()
+            await self.refresh_access_token(seen_token=self._token)
 
         default_headers = {
             "Accept": "application/json",
@@ -87,28 +90,42 @@ class DpdApi:
         self._save_token_data(token_data)
         return token_data
 
-    async def refresh_access_token(self):
-        if not self._refresh_token:
-            raise Exception("Missing DPD refresh token")
+    async def refresh_access_token(self, seen_token: str | None = None):
+        """Refresh the DPD access token.
 
-        url = f"{self.SSO_URL}/auth/realms/DPD/protocol/openid-connect/token"
-        form_data = {
-            "refresh_token": self._refresh_token,
-            "grant_type": "refresh_token",
-            "client_id": self.CLIENT_ID,
-        }
-        try:
-            async with self._session.post(url, data=form_data) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    raise Exception(f"DPD refresh failed: {resp.status} {text}")
-                data = await resp.json()
-                if not data.get("access_token"):
-                    raise Exception("DPD refresh failed: missing access_token")
-                self._save_token_data(data)
-        except Exception as e:
-            _LOGGER.error("DPD Token refresh failed: %s", e)
-            raise
+        With seen_token, skip the refresh when another request already replaced
+        that token while this one waited for the lock.
+        """
+        async with self._refresh_lock:
+            if seen_token is not None and self._token != seen_token:
+                return
+            if not self._refresh_token:
+                raise Exception("Missing DPD refresh token")
+
+            url = f"{self.SSO_URL}/auth/realms/DPD/protocol/openid-connect/token"
+            form_data = {
+                "refresh_token": self._refresh_token,
+                "grant_type": "refresh_token",
+                "client_id": self.CLIENT_ID,
+            }
+            try:
+                async with asyncio.timeout(30):
+                    async with self._session.post(url, data=form_data) as resp:
+                        if resp.status != 200:
+                            text = await resp.text()
+                            # error_detail keeps the OAuth error (invalid_grant),
+                            # on which the coordinator asks to sign in again.
+                            raise Exception(f"DPD refresh failed: {resp.status} {error_detail(text)}")
+                        data = await resp.json()
+                        if not data.get("access_token"):
+                            raise Exception("DPD refresh failed: missing access_token")
+                        self._save_token_data(data)
+            except asyncio.TimeoutError as e:
+                _LOGGER.error("DPD Token refresh timed out")
+                raise Exception("DPD refresh timed out") from e
+            except Exception as e:
+                _LOGGER.error("DPD Token refresh failed: %s", e)
+                raise
 
     def _save_token_data(self, data):
         self._token = data.get("access_token")

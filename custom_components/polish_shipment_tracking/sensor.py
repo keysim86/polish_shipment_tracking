@@ -167,7 +167,9 @@ def _async_remove_old_entities(
     entities_to_remove = []
     for entity_entry in registry.entities.values():
         if (
-            entity_entry.platform == DOMAIN
+            # Buttons share platform and config entry; button.py cleans them up.
+            entity_entry.domain == "sensor"
+            and entity_entry.platform == DOMAIN
             and entity_entry.config_entry_id == entry.entry_id
             and entity_entry.unique_id != ACTIVE_SHIPMENTS_UNIQUE_ID
             and entity_entry.unique_id not in current_unique_ids
@@ -182,6 +184,26 @@ class ShipmentSensor(CoordinatorEntity[ShipmentCoordinator], SensorEntity):
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:package-variant-closed"
+    # Pickup secrets (open code, PIN, pickup code, QR payload), contact data
+    # and the raw courier payload, which repeats them, stay in the live state
+    # that cards and dashboards read but are kept out of the recorder.
+    _unrecorded_attributes = frozenset(
+        {
+            "raw_response",
+            "open_code",
+            "pin",
+            "pickup_code",
+            "qr_code",
+            "phone_number",
+            "account_contact",
+            "courier_phone_number",
+            "receiver_name",
+            "recipient_name",
+            # Unfiltered courier sub-payloads (scan history, package lists).
+            "history",
+            "packages",
+        }
+    )
 
     def __init__(
         self,
@@ -519,6 +541,9 @@ class ActiveShipmentsSensor(SensorEntity):
     _attr_translation_key = "active_shipments"
     _attr_unique_id = ACTIVE_SHIPMENTS_UNIQUE_ID
     _attr_suggested_object_id = f"{DOMAIN}_active_shipments"
+    # The ignore list is written by any user; it has no history value and at
+    # its cap would exceed the recorder's attribute size limit anyway.
+    _unrecorded_attributes = frozenset({"ignored_shipments"})
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the sensor."""

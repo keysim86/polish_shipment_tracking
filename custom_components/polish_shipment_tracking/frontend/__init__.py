@@ -55,12 +55,24 @@ class JSModuleRegistration:
         return mode == "storage"
 
     async def _async_register_path(self) -> None:
-        """Register the static HTTP path for serving frontend files."""
-        try:
-            await self.hass.http.async_register_static_paths(
-                [StaticPathConfig(URL_BASE, Path(__file__).parent, False)]
+        """Register the static HTTP paths for serving the card files.
+
+        Only the files listed in JSMODULES are served, not the whole package
+        directory, so the Python sources next to them are not reachable.
+        """
+        frontend_dir = Path(__file__).parent
+        configs = [
+            StaticPathConfig(
+                f"{URL_BASE}/{module['filename']}",
+                str(frontend_dir / module["filename"]),
+                False,
             )
-            _LOGGER.debug("Path registered: %s -> %s", URL_BASE, Path(__file__).parent)
+            for module in JSMODULES
+        ]
+        try:
+            await self.hass.http.async_register_static_paths(configs)
+            for config in configs:
+                _LOGGER.debug("Path registered: %s -> %s", config.url_path, config.path)
         except RuntimeError:
             # Path is already registered, which can happen on reload.
             _LOGGER.debug("Path already registered: %s", URL_BASE)

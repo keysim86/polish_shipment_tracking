@@ -10,7 +10,7 @@ import urllib.parse
 import aiohttp
 import async_timeout
 
-from .api_helpers import request_json
+from .api_helpers import error_detail, redact, request_json
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -158,10 +158,11 @@ class InPostApi:
                     text = await resp.text()
                     if resp.status in (400, 401, 403):
                         # invalid_grant: the code or refresh token is used up or revoked.
-                        _LOGGER.info("InPost token endpoint rejected the grant: %s %s", resp.status, text)
-                        raise InPostAuthError(f"InPost token endpoint {resp.status}: {text}")
+                        detail = error_detail(text)
+                        _LOGGER.info("InPost token endpoint rejected the grant: %s %s", resp.status, detail)
+                        raise InPostAuthError(f"InPost token endpoint {resp.status}: {detail}")
                     if resp.status >= 400:
-                        raise Exception(f"InPost token endpoint {resp.status}: {text}")
+                        raise Exception(f"InPost token endpoint {resp.status}: {error_detail(text)}")
         except asyncio.TimeoutError as err:
             raise Exception("InPost token request timed out") from err
         except aiohttp.ClientError as err:
@@ -170,7 +171,7 @@ class InPostApi:
         try:
             payload = json.loads(text)
         except ValueError as err:
-            raise Exception(f"InPost token endpoint returned no JSON: {text[:200]}") from err
+            raise Exception(f"InPost token endpoint returned no JSON: {redact(text)}") from err
         if not payload.get("access_token") or not payload.get("refresh_token"):
             raise InPostAuthError("InPost token response has no tokens")
 

@@ -4,6 +4,20 @@ Changes in this fork of [stirante/polish_shipment_tracking](https://github.com/s
 
 The same notes are published with each [GitHub release](https://github.com/radzio/polish_shipment_tracking/releases), which is where HACS reads them from.
 
+## Unreleased (keysim86 fork)
+
+Security and reliability fixes from a code review of 1.11.1.
+
+- **Card: parcel data can no longer inject HTML.** The shipment card put sender names, event descriptions, locations and pickup codes into the page without escaping, so a sender name chosen by whoever ships a parcel could run script in the browser of anyone viewing the card. Every value is now escaped, and links and images accept only https (tel: for phone numbers). Logos set in the card config (`courier_logos`) may also be http, `data:image/…` or a Home Assistant path such as `/local/…`.
+- **Card: the QR code is now opt-in.** The QR image is rendered by an external service (quickchart.io), which received the locker QR payload or pickup code in its URL. It is shown only with `show_dialog_qr_code: true`. Cards saved through the editor before this change may already contain `show_dialog_qr_code: true` — switch it off there if you don't want it.
+- **Pickup secrets stay out of the recorder.** Open codes, PINs, pickup and QR codes, phone numbers, recipient and receiver names, the raw courier payload, scan history, package lists and the ignore list are no longer written to the database. They stay in the live state that cards and dashboards read. Rows written before the update stay until the recorder purges them.
+- **Logs no longer contain identifiers or full server responses.** Errors keep the HTTP status, the OAuth error and a short masked snippet; URLs are logged by host only (ORLEN puts the phone number and device id in the path). The DPD management link is no longer logged.
+- **InPost and DPD: renewed tokens are saved even when a poll fails.** DPD renews its short-lived token on almost every poll but saved it only after a 401, so after a restart the integration fell back to the sign-in refresh token and eventually asked for a new SMS sign-in. InPost replaces its refresh token on every refresh but saved it only after a successful poll. Renewed tokens are now saved after every poll and after the DPD management button, never over tokens a re-authentication has just written. The DPD refresh is single-flight and times out after 30 s.
+- **Services validate tracking numbers** (4–64 ASCII letters or digits, no control characters), and the ignore list is capped at 100 entries: the oldest entries that no account returns go first. Ignored numbers are stored and shown normalised (upper case, without separators).
+- **Buttons are no longer removed and re-created on every update** (the sensor clean-up was deleting the integration's own buttons).
+- **Pocztex: the cash-on-delivery row no longer shows "undefined zł"** when the parcel has no amount.
+- The static path now serves only the card file instead of the whole `frontend` package directory.
+
 ## 1.11.1 – 2026-11-04
 
 - **ORLEN Paczka: “ready for pickup” parcels no longer show as “unknown”.** When an ORLEN parcel reached its pick-up point or locker, its status could show as *unknown* instead of *waiting for pickup*, because ORLEN uses point/locker-specific status codes (the `*_pudo` family) that were not all in the lookup table. ORLEN now falls back to the parcel’s own Polish status description whenever the status code is not recognised, so *ready for pickup* — and the other point/locker states — are classified correctly. Also maps “not collected / expired” parcels (previously left as *unknown*) to *returned*.

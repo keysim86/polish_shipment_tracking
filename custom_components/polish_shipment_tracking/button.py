@@ -249,11 +249,17 @@ class ManageShipmentButton(CoordinatorEntity[ShipmentCoordinator], ButtonEntity)
                 err,
             )
             return
+        finally:
+            # The request may have renewed the DPD token in-line: save it now
+            # rather than at the next poll.
+            self.coordinator._persist_rotated_auth_if_changed()
 
+        # The response holds the management link itself (a capability URL):
+        # log its shape only, never its content.
         _LOGGER.debug(
-            "DPD manage URL response for %s: %s",
+            "DPD manage URL response for %s received (%s)",
             self._tracking_number,
-            manage_resp,
+            sorted(manage_resp) if isinstance(manage_resp, dict) else type(manage_resp).__name__,
         )
         manage_url = None
         if isinstance(manage_resp, dict):
@@ -267,9 +273,9 @@ class ManageShipmentButton(CoordinatorEntity[ShipmentCoordinator], ButtonEntity)
 
         if not manage_url:
             _LOGGER.warning(
-                "DPD management URL missing in response for %s: %s",
+                "DPD management URL missing in response for %s (%s)",
                 self._tracking_number,
-                manage_resp,
+                sorted(manage_resp) if isinstance(manage_resp, dict) else type(manage_resp).__name__,
             )
             return
 

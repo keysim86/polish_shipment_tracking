@@ -25,7 +25,7 @@ const CARD_TRANSLATIONS = {
     "editor.show_dialog_cod": "Show COD amount in details",
     "editor.show_dialog_delivery_date": "Show planned delivery date in details",
     "editor.show_dialog_parcel_size": "Show parcel size in details",
-    "editor.show_dialog_qr_code": "Show QR code in details",
+    "editor.show_dialog_qr_code": "Show QR code in details (image rendered by the external service quickchart.io)",
     "editor.show_dialog_timeline": "Show timeline in details",
     "editor.show_dialog_manage_button": "Show manage button in details",
     "editor.show_dialog_entity_button": "Show entity button in details",
@@ -93,7 +93,7 @@ const CARD_TRANSLATIONS = {
     "editor.show_dialog_cod": "Pokaż kwotę pobrania w szczegółach",
     "editor.show_dialog_delivery_date": "Pokaż planowaną datę doręczenia w szczegółach",
     "editor.show_dialog_parcel_size": "Pokaż gabaryt paczki w szczegółach",
-    "editor.show_dialog_qr_code": "Pokaż kod QR w szczegółach",
+    "editor.show_dialog_qr_code": "Pokaż kod QR w szczegółach (obraz generuje zewnętrzny serwis quickchart.io)",
     "editor.show_dialog_timeline": "Pokaż historię przesyłki w szczegółach",
     "editor.show_dialog_manage_button": "Pokaż przycisk zarządzania w szczegółach",
     "editor.show_dialog_entity_button": "Pokaż przycisk encji w szczegółach",
@@ -149,6 +149,52 @@ const localize = (hass, key) => {
   const language = normalizeLanguage(hass?.language || hass?.locale?.language || fallbackLanguage);
   const translations = CARD_TRANSLATIONS[language] || CARD_TRANSLATIONS[DEFAULT_LANGUAGE];
   return translations[key] || CARD_TRANSLATIONS[DEFAULT_LANGUAGE][key] || key;
+};
+
+// Card options that stay off unless the card config sets them to true. The QR
+// code is opt-in because its image is rendered by an external service
+// (quickchart.io), which receives the QR payload in the image URL.
+const OPT_IN_OPTIONS = new Set(["show_dialog_qr_code"]);
+
+const HTML_ESCAPES = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;"
+};
+
+// Escape a value for HTML text or a quoted attribute. Every value that comes
+// from entity attributes, raw_response, carrier APIs or the card config must
+// go through this before it is interpolated into innerHTML.
+const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => HTML_ESCAPES[char]);
+
+// Return the normalised URL when it parses and uses one of the allowed schemes,
+// otherwise null so the caller drops the link or image. With allowSameOrigin,
+// relative URLs (such as /local/... in courier_logos from the card config)
+// are also kept when they stay on the Home Assistant origin, even over plain
+// http. Escape the result before use in HTML.
+const safeUrl = (value, protocols = ["https:"], allowSameOrigin = false) => {
+  if (!value) return null;
+  let url;
+  try {
+    url = new URL(String(value), document.baseURI);
+  } catch (err) {
+    return null;
+  }
+  if (protocols.includes(url.protocol)) return url.href;
+  const sameOrigin = allowSameOrigin
+    && (url.protocol === "https:" || url.protocol === "http:")
+    && url.origin === window.location.origin;
+  return sameOrigin ? url.href : null;
+};
+
+// Logos come from the card config, which only a dashboard admin writes: besides
+// https they may be http, a data:image/ URI, or a path on Home Assistant
+// (/local/...). An <img> cannot run script, so these are safe as image sources.
+const safeLogoUrl = (value) => {
+  const href = safeUrl(value, ["https:", "http:", "data:"], true);
+  return href && (!href.startsWith("data:") || href.startsWith("data:image/")) ? href : null;
 };
 
 class ShipmentTrackingCard extends HTMLElement {
@@ -590,7 +636,8 @@ class ShipmentTrackingCard extends HTMLElement {
   }
 
   _isEnabled(optionName) {
-    return this.config?.[optionName] !== false;
+    const value = this.config?.[optionName];
+    return OPT_IN_OPTIONS.has(optionName) ? value === true : value !== false;
   }
 
   _getDeliveryType(attrs) {
@@ -785,9 +832,10 @@ class ShipmentTrackingCard extends HTMLElement {
   }
 
   _openExternalUrl(url) {
-    if (!url) return;
+    const safeHref = safeUrl(url);
+    if (!safeHref) return;
     const link = document.createElement("a");
-    link.href = url;
+    link.href = safeHref;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     link.style.display = "none";
@@ -859,6 +907,12 @@ class ShipmentTrackingCard extends HTMLElement {
     return 'mdi:package-variant-closed';
   }
 
+  // A logo set in the card config (courier_logos), if any.
+  _configLogo(name) {
+    const logos = this.config && this.config.courier_logos;
+    return (logos && name && logos[String(name).toLowerCase()]) || null;
+  }
+
   getCourierImage(name) {
     const n = name.toLowerCase();
     if (this.config.courier_logos && this.config.courier_logos[n]) {
@@ -896,15 +950,15 @@ class ShipmentTrackingCard extends HTMLElement {
     let headerActionsHtml = '';
     
     if (this._isEnabled("show_dialog_entity_button")) {
-      headerActionsHtml += `<button class="header-icon-btn" data-entity-button="${entityId}" title="${this._localize("dialog.show_entity")}"><ha-icon icon="mdi:information-outline"></ha-icon></button>`;
+      headerActionsHtml += `<button class="header-icon-btn" data-entity-button="${escapeHtml(entityId)}" title="${this._localize("dialog.show_entity")}"><ha-icon icon="mdi:information-outline"></ha-icon></button>`;
     }
     if (refreshShipmentButtonId) {
-      headerActionsHtml += `<button class="header-icon-btn" data-refresh-button="${refreshShipmentButtonId}" title="${this._localize("dialog.refresh_shipment")}"><ha-icon icon="mdi:refresh"></ha-icon></button>`;
+      headerActionsHtml += `<button class="header-icon-btn" data-refresh-button="${escapeHtml(refreshShipmentButtonId)}" title="${this._localize("dialog.refresh_shipment")}"><ha-icon icon="mdi:refresh"></ha-icon></button>`;
     }
     if (attrs.tracking_number && this._hass.services?.polish_shipment_tracking?.ignore_shipment) {
       // Two clicks: the first arms the button, the second hides the shipment.
       const armed = this._ignoreArmedEntityId === entityId;
-      headerActionsHtml += `<button class="header-icon-btn ${armed ? 'confirm' : ''}" data-ignore-button="${attrs.tracking_number}" title="${this._localize(armed ? "dialog.ignore_confirm" : "dialog.ignore_shipment")}"><ha-icon icon="${armed ? 'mdi:eye-off' : 'mdi:eye-off-outline'}"></ha-icon></button>`;
+      headerActionsHtml += `<button class="header-icon-btn ${armed ? 'confirm' : ''}" data-ignore-button="${escapeHtml(attrs.tracking_number)}" title="${this._localize(armed ? "dialog.ignore_confirm" : "dialog.ignore_shipment")}"><ha-icon icon="${armed ? 'mdi:eye-off' : 'mdi:eye-off-outline'}"></ha-icon></button>`;
     }
     const headerDynamicContainer = this.querySelector('#header-dynamic-actions');
     if (headerDynamicContainer) {
@@ -962,26 +1016,26 @@ class ShipmentTrackingCard extends HTMLElement {
     let infoHtml = `<div class="modal-info-block">`;
     
     if (attrs.tracking_number) {
-        infoHtml += `<div class="modal-info-block-row"><strong>Numer:</strong> <span class="val" style="flex-grow: 1; user-select: all; -webkit-user-select: all;">${attrs.tracking_number}</span></div>`;
+        infoHtml += `<div class="modal-info-block-row"><strong>Numer:</strong> <span class="val" style="flex-grow: 1; user-select: all; -webkit-user-select: all;">${escapeHtml(attrs.tracking_number)}</span></div>`;
     }
     if (attrs.courier) {
-      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.courier_name")}:</strong> <span class="val">${attrs.courier}</span></div>`;
+      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.courier_name")}:</strong> <span class="val">${escapeHtml(attrs.courier)}</span></div>`;
     }
     const dialogDeliveryType = this._isEnabled("show_dialog_delivery_type") ? this._getDeliveryType(attrs) : null;
     if (dialogDeliveryType) {
-      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.delivery_type")}:</strong> <span class="val">${dialogDeliveryType.label}</span></div>`;
+      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.delivery_type")}:</strong> <span class="val">${escapeHtml(dialogDeliveryType.label)}</span></div>`;
     }
     if (this._isEnabled("show_dialog_sender") && (attrs.sender || attrs.sender_name)) {
-      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.sender")}:</strong> <span class="val">${attrs.sender || attrs.sender_name}</span></div>`;
+      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.sender")}:</strong> <span class="val">${escapeHtml(attrs.sender || attrs.sender_name)}</span></div>`;
     }
     if (this._isEnabled("show_dialog_account_contact") && attrs.account_contact) {
-      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.account_contact")}:</strong> <span class="val">${attrs.account_contact}</span></div>`;
+      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.account_contact")}:</strong> <span class="val">${escapeHtml(attrs.account_contact)}</span></div>`;
     }
     if (this._isEnabled("show_dialog_recipient") && attrs.recipient_name) {
-      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.recipient")}:</strong> <span class="val">${attrs.recipient_name}</span></div>`;
+      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.recipient")}:</strong> <span class="val">${escapeHtml(attrs.recipient_name)}</span></div>`;
     }
     if (this._isEnabled("show_dialog_pickup_code") && (attrs.pickup_code || attrs.open_code)) {
-      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.pickup_code")}:</strong> <span class="val">${attrs.pickup_code || attrs.open_code}</span></div>`;
+      infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.pickup_code")}:</strong> <span class="val">${escapeHtml(attrs.pickup_code || attrs.open_code)}</span></div>`;
     }
     
     let timelineHtml = '';
@@ -1001,18 +1055,19 @@ class ShipmentTrackingCard extends HTMLElement {
         };
 
         if (!attrs.courier && courier === 'dpd' && raw.delivery && raw.delivery.courier_name) {
-          infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.courier_name")}:</strong> <span class="val">${raw.delivery.courier_name}</span></div>`;
+          infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.courier_name")}:</strong> <span class="val">${escapeHtml(raw.delivery.courier_name)}</span></div>`;
         }
 
-        if (this._isEnabled("show_dialog_cod") && courier === 'pocztex' && (raw.amount !== null || raw.paymentAmount !== null)) {
-          const amountStr = (raw.amount !== null ? raw.amount : raw.paymentAmount) + ' zł';
-          infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.cod")}:</strong> <span class="val">${amountStr}</span></div>`;
+        const codAmount = raw.amount ?? raw.paymentAmount;
+        if (this._isEnabled("show_dialog_cod") && courier === 'pocztex' && codAmount != null) {
+          const amountStr = codAmount + ' zł';
+          infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.cod")}:</strong> <span class="val">${escapeHtml(amountStr)}</span></div>`;
         }
 
         if (this._isEnabled("show_dialog_delivery_date") && courier === 'dpd') {
           const plannedDeliveryDate = raw.delivery?.planned_delivery_date || raw.planned_delivery_date;
           if (plannedDeliveryDate) {
-            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.planned_delivery_date")}:</strong> <span class="val">${plannedDeliveryDate}</span></div>`;
+            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.planned_delivery_date")}:</strong> <span class="val">${escapeHtml(plannedDeliveryDate)}</span></div>`;
           }
         }
 
@@ -1035,22 +1090,27 @@ class ShipmentTrackingCard extends HTMLElement {
             : null;
 
           if (this._isEnabled("show_dialog_parcel_size") && packageCount) {
-            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.package_count")}:</strong> <span class="val">${packageCount}</span></div>`;
+            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.package_count")}:</strong> <span class="val">${escapeHtml(packageCount)}</span></div>`;
           }
           if (this._isEnabled("show_dialog_parcel_size") && glsWeight) {
-            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.weight")}:</strong> <span class="val">${glsWeight} kg</span></div>`;
+            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.weight")}:</strong> <span class="val">${escapeHtml(glsWeight)} kg</span></div>`;
           }
           if (courierPersonName) {
-            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("labels.courier_default")}:</strong> <span class="val">${courierPersonName}</span></div>`;
+            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("labels.courier_default")}:</strong> <span class="val">${escapeHtml(courierPersonName)}</span></div>`;
           }
           if (courierPhone) {
-            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.courier_phone")}:</strong> <span class="val"><a href="tel:${courierPhone}" class="modal-nav-link">${courierPhone}</a></span></div>`;
+            const telUrl = safeUrl(`tel:${courierPhone}`, ["tel:"]);
+            const phoneHtml = telUrl
+              ? `<a href="${escapeHtml(telUrl)}" class="modal-nav-link">${escapeHtml(courierPhone)}</a>`
+              : escapeHtml(courierPhone);
+            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.courier_phone")}:</strong> <span class="val">${phoneHtml}</span></div>`;
           }
           if (deliveryMethod) {
-            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.delivery_method")}:</strong> <span class="val">${this._localize(`gls.${deliveryMethod}`)}</span></div>`;
+            // localize() falls back to the key, which embeds the API value.
+            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.delivery_method")}:</strong> <span class="val">${escapeHtml(this._localize(`gls.${deliveryMethod}`))}</span></div>`;
           }
           if (parcelShopType) {
-            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.parcel_shop_type")}:</strong> <span class="val">${parcelShopType}</span></div>`;
+            infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.parcel_shop_type")}:</strong> <span class="val">${escapeHtml(parcelShopType)}</span></div>`;
           }
 
           const postalCode = trackingShipment.receiver?.postalCode;
@@ -1059,7 +1119,7 @@ class ShipmentTrackingCard extends HTMLElement {
             const rttUrl = `https://gls-rtt.com/#/preview/gls-pl/pl/${encodeURIComponent(trackingNo)}/${encodeURIComponent(postalCode)}`;
             infoHtml += `
               <div class="manage-shipment-container">
-                <a href="${rttUrl}" target="_blank" rel="noopener noreferrer" class="manage-btn" data-manage-link="true">
+                <a href="${escapeHtml(rttUrl)}" target="_blank" rel="noopener noreferrer" class="manage-btn" data-manage-link="true">
                   <ha-icon icon="mdi:map-marker-path"></ha-icon>
                   <span>${this._localize("dialog.live_tracking")}</span>
                 </a>
@@ -1088,12 +1148,15 @@ class ShipmentTrackingCard extends HTMLElement {
           }
         }
         if (this._isEnabled("show_dialog_pickup_point") && locationName) {
-          let locationContent = `<span class="val">${locationName}`;
+          let locationContent = `<span class="val">${escapeHtml(locationName)}`;
           
           if (this._isEnabled("show_dialog_navigation") && courier === 'inpost' && raw.pickUpPoint?.location?.latitude && raw.pickUpPoint?.location?.longitude) {
             const lat = raw.pickUpPoint.location.latitude;
             const lon = raw.pickUpPoint.location.longitude;
-            locationContent += `<br><a href="https://maps.google.com/?q=${lat},${lon}" target="_blank" class="modal-nav-link"><ha-icon icon="mdi:map-marker-path"></ha-icon> ${this._localize("dialog.navigate")}</a>`;
+            const mapsUrl = safeUrl(`https://maps.google.com/?q=${encodeURIComponent(lat)},${encodeURIComponent(lon)}`);
+            if (mapsUrl) {
+              locationContent += `<br><a href="${escapeHtml(mapsUrl)}" target="_blank" class="modal-nav-link"><ha-icon icon="mdi:map-marker-path"></ha-icon> ${this._localize("dialog.navigate")}</a>`;
+            }
           }
           
           locationContent += `</span>`;
@@ -1102,6 +1165,8 @@ class ShipmentTrackingCard extends HTMLElement {
 
         // QR source: InPost carries a real qrCode; Allegro pickup packages use
         // their Allegro QR when present (lockers), else the numeric pickup code.
+        // The image is rendered by quickchart.io, which receives this value, so
+        // show_dialog_qr_code is opt-in (see OPT_IN_OPTIONS).
         const qrValue = courier === 'inpost'
           ? raw.qrCode
           : (courier === 'allegro' ? (attrs.qr_code || attrs.pickup_code) : null);
@@ -1109,8 +1174,8 @@ class ShipmentTrackingCard extends HTMLElement {
            const qrUrlSmall = `https://quickchart.io/qr?text=${encodeURIComponent(qrValue)}&size=150&margin=0&ecLevel=H`;
            const qrUrlLarge = `https://quickchart.io/qr?text=${encodeURIComponent(qrValue)}&size=500&margin=0&ecLevel=H`;
            infoHtml += `
-             <div class="qr-code-container" data-large-qr="${qrUrlLarge}">
-               <img src="${qrUrlSmall}" alt="QR Code" />
+             <div class="qr-code-container" data-large-qr="${escapeHtml(qrUrlLarge)}">
+               <img src="${escapeHtml(qrUrlSmall)}" alt="QR Code" />
                <div class="qr-code-label">${this._localize("dialog.scan_qr")}</div>
              </div>
            `;
@@ -1151,7 +1216,7 @@ class ShipmentTrackingCard extends HTMLElement {
             infoHtml += `
               <div class="modal-info-block-row">
                 <strong>${this._localize("dialog.parcel_size")}:</strong>
-                <span class="val"><span dir="ltr">${rawSize}</span></span>
+                <span class="val"><span dir="ltr">${escapeHtml(rawSize)}</span></span>
               </div>`;
           }
         }
@@ -1161,9 +1226,9 @@ class ShipmentTrackingCard extends HTMLElement {
             const dateStr = new Date(e.date).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' });
             timelineHtml += `
               <div class="timeline-item">
-                <div class="timeline-date">${dateStr}</div>
-                <div class="timeline-title">${e.eventTitle}</div>
-                <div class="timeline-desc">${e.eventDescription || ''}</div>
+                <div class="timeline-date">${escapeHtml(dateStr)}</div>
+                <div class="timeline-title">${escapeHtml(e.eventTitle)}</div>
+                <div class="timeline-desc">${escapeHtml(e.eventDescription || '')}</div>
               </div>`;
           });
         } else if (courier === 'dpd' && raw.statuses && raw.statuses.length > 0) {
@@ -1172,8 +1237,8 @@ class ShipmentTrackingCard extends HTMLElement {
             const title = this._localize(`dpd.${s.status}`) !== `dpd.${s.status}` ? this._localize(`dpd.${s.status}`) : s.status;
             timelineHtml += `
               <div class="timeline-item">
-                <div class="timeline-date">${dateStr}</div>
-                <div class="timeline-title">${title}</div>
+                <div class="timeline-date">${escapeHtml(dateStr)}</div>
+                <div class="timeline-title">${escapeHtml(title)}</div>
               </div>`;
           });
         } else if (courier === 'pocztex' && Array.isArray(raw.history) && raw.history.length > 0) {
@@ -1182,8 +1247,8 @@ class ShipmentTrackingCard extends HTMLElement {
             const title = event.state || event.stateCode || '';
             timelineHtml += `
               <div class="timeline-item">
-                <div class="timeline-date">${dateStr}</div>
-                <div class="timeline-title">${title}</div>
+                <div class="timeline-date">${escapeHtml(dateStr)}</div>
+                <div class="timeline-title">${escapeHtml(title)}</div>
               </div>`;
           });
         } else if (courier === 'gls' && Array.isArray(raw.trackingShipmentPackages)) {
@@ -1199,12 +1264,12 @@ class ShipmentTrackingCard extends HTMLElement {
             .forEach(event => {
               const dateStr = formatDateTime(event.packageStatusDate);
               const title = event.packageStatusName || event.packageStatusDescription || '';
-              const place = event.packageStatusPlace ? `<div class="timeline-desc">${event.packageStatusPlace}</div>` : '';
-              const packageLine = event.packageNo ? `<div class="timeline-desc"><span dir="ltr">${event.packageNo}</span></div>` : '';
+              const place = event.packageStatusPlace ? `<div class="timeline-desc">${escapeHtml(event.packageStatusPlace)}</div>` : '';
+              const packageLine = event.packageNo ? `<div class="timeline-desc"><span dir="ltr">${escapeHtml(event.packageNo)}</span></div>` : '';
               timelineHtml += `
                 <div class="timeline-item">
-                  <div class="timeline-date">${dateStr}</div>
-                  <div class="timeline-title">${title}</div>
+                  <div class="timeline-date">${escapeHtml(dateStr)}</div>
+                  <div class="timeline-title">${escapeHtml(title)}</div>
                   ${place}
                   ${packageLine}
                 </div>`;
@@ -1243,9 +1308,9 @@ class ShipmentTrackingCard extends HTMLElement {
             const dateStr = st.date ? (formatDateTime(st.date) + (isEta ? ' (przewidywane)' : '')) : '';
             timelineHtml += `
               <div class="timeline-item" style="${reached ? '' : 'opacity:0.55;'}">
-                <div class="timeline-date">${dateStr}</div>
-                <div class="timeline-title">${st.title}</div>
-                ${st.desc ? `<div class="timeline-desc">${st.desc}</div>` : ''}
+                <div class="timeline-date">${escapeHtml(dateStr)}</div>
+                <div class="timeline-title">${escapeHtml(st.title)}</div>
+                ${st.desc ? `<div class="timeline-desc">${escapeHtml(st.desc)}</div>` : ''}
               </div>`;
           }
         }
@@ -1254,7 +1319,7 @@ class ShipmentTrackingCard extends HTMLElement {
       }
     } else {
       if (this._isEnabled("show_dialog_pickup_point") && (attrs.location || attrs.current_location)) {
-        infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.pickup_point")}:</strong> <span class="val">${attrs.location || attrs.current_location}</span></div>`;
+        infoHtml += `<div class="modal-info-block-row"><strong>${this._localize("dialog.pickup_point")}:</strong> <span class="val">${escapeHtml(attrs.location || attrs.current_location)}</span></div>`;
       }
     }
 
@@ -1263,7 +1328,8 @@ class ShipmentTrackingCard extends HTMLElement {
     const manageShipmentButtonId = this._isEnabled("show_dialog_manage_button") && manageShipmentAvailable
       ? this._getManageShipmentButtonId(attrs)
       : null;
-    const manageShipmentUrl = this._getCachedManageUrl(attrs);
+    // Only an https manage URL becomes a link.
+    const manageShipmentUrl = safeUrl(this._getCachedManageUrl(attrs));
     const manageShipmentPending = manageShipmentButtonId && !manageShipmentUrl && this._isManageUrlPending(attrs);
       
     let finalHtml = infoHtml;
@@ -1273,7 +1339,7 @@ class ShipmentTrackingCard extends HTMLElement {
       finalHtml += `
         <div class="manage-shipment-container">
           ${manageShipmentUrl ? `
-          <a href="${manageShipmentUrl}" target="_blank" rel="noopener noreferrer" class="manage-btn" data-manage-link="true">
+          <a href="${escapeHtml(manageShipmentUrl)}" target="_blank" rel="noopener noreferrer" class="manage-btn" data-manage-link="true">
             <ha-icon icon="mdi:open-in-new"></ha-icon>
             <span>${this._localize("dialog.manage_shipment")}</span>
           </a>
@@ -1387,29 +1453,34 @@ class ShipmentTrackingCard extends HTMLElement {
         
         const isTrackingName = friendlyName === attributes.tracking_number;
         let nameClass = "name";
-        let displayFriendlyName = friendlyName;
+        // Escaped once here; the markup below interpolates it as-is.
+        let displayFriendlyName = escapeHtml(friendlyName);
 
         if (isTrackingName) {
             nameClass += " truncate-left";
-            displayFriendlyName = `<span dir="ltr">${friendlyName}</span>`;
+            displayFriendlyName = `<span dir="ltr">${displayFriendlyName}</span>`;
         }
 
         const line2 = isTrackingName ? "" : attributes.tracking_number;
-        const displayLine2 = line2 ? `<span dir="ltr">${line2}</span>` : "";
+        const displayLine2 = line2 ? `<span dir="ltr">${escapeHtml(line2)}</span>` : "";
 
         // Allegro packages carry the real carrier's icon (Allegro One / InPost /
-        // ...) as an image URL; prefer it. Falls back to the mdi icon via onerror.
+        // ...) as an image URL; prefer it. Falls back to the mdi icon via onerror,
+        // or right away when the URL is not https. Only the logos from the card
+        // config (courier_logos, e.g. /local/...) may also point at Home Assistant.
         const imageUrl = (courier === 'allegro' && attributes.carrier_icon)
-          ? attributes.carrier_icon
-          : this.getCourierImage(courier);
+          ? safeUrl(attributes.carrier_icon)
+          : this._configLogo(courier)
+            ? safeLogoUrl(this._configLogo(courier))
+            : safeUrl(this.getCourierImage(courier));
         const iconMdi = attributes.icon || this.getCourierIcon(courier);
 
         let iconHtml;
         if (imageUrl) {
-          iconHtml = `<img src="${imageUrl}" alt="${courier}" class="courier-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-                      <ha-icon icon="${iconMdi}" style="display:none;"></ha-icon>`;
+          iconHtml = `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(courier)}" class="courier-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                      <ha-icon icon="${escapeHtml(iconMdi)}" style="display:none;"></ha-icon>`;
         } else {
-          iconHtml = `<ha-icon icon="${iconMdi}"></ha-icon>`;
+          iconHtml = `<ha-icon icon="${escapeHtml(iconMdi)}"></ha-icon>`;
         }
 
         const statusInfo = this.getStatusInfo(stateObj);
@@ -1419,17 +1490,17 @@ class ShipmentTrackingCard extends HTMLElement {
         let extraInfoHtml = '';
         const listDeliveryType = this._isEnabled("show_list_delivery_type") ? this._getDeliveryType(attributes) : null;
         if (listDeliveryType) {
-            extraInfoHtml += `<div class="delivery-type-line"><ha-icon icon="${listDeliveryType.icon}"></ha-icon><span>${listDeliveryType.label}</span></div>`;
+            extraInfoHtml += `<div class="delivery-type-line"><ha-icon icon="${escapeHtml(listDeliveryType.icon)}"></ha-icon><span>${escapeHtml(listDeliveryType.label)}</span></div>`;
         }
         if (this._isEnabled("show_list_pickup_code") && pickupCode) {
-            extraInfoHtml += `<div class="pickup-code">${pickupCodeLabel}: ${pickupCode}</div>`;
+            extraInfoHtml += `<div class="pickup-code">${pickupCodeLabel}: ${escapeHtml(pickupCode)}</div>`;
         }
         if (this._isEnabled("show_list_location") && location) {
-             extraInfoHtml += `<div class="extra-info-text">${pickupPointLabel}: ${location}</div>`;
+             extraInfoHtml += `<div class="extra-info-text">${pickupPointLabel}: ${escapeHtml(location)}</div>`;
         }
 
         html += `
-          <div class="shipment-item" data-entity-id="${entityId}">
+          <div class="shipment-item" data-entity-id="${escapeHtml(entityId)}">
             <div class="icon-container">
               ${iconHtml}
             </div>
@@ -1440,8 +1511,8 @@ class ShipmentTrackingCard extends HTMLElement {
                         <div class="${nameClass}">${displayFriendlyName}</div>
                         <div class="courier truncate-left">${displayLine2}</div>
                     </div>
-                    <div class="status-badge ${statusInfo.class}">
-                        ${statusInfo.text}
+                    <div class="status-badge ${escapeHtml(statusInfo.class)}">
+                        ${escapeHtml(statusInfo.text)}
                     </div>
                 </div>
 
@@ -1611,8 +1682,9 @@ class ShipmentTrackingCardEditor extends HTMLElement {
       "show_list_delivery_type",
       "show_dialog_delivery_type"
     ];
+    // Same defaults as the card's _isEnabled(): on, except the opt-in options.
     booleanDefaults.forEach((key) => {
-      if (data[key] === undefined) data[key] = true;
+      if (data[key] === undefined) data[key] = !OPT_IN_OPTIONS.has(key);
     });
 
     this._form.hass = this._hass;

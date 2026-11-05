@@ -26,7 +26,7 @@ from .frontend import JSModuleRegistration
 from .coordinator import ShipmentCoordinator
 from .followed import FollowedShipments
 from .helpers import get_parcel_id
-from .ignored import IgnoredShipments, normalize_tracking_number
+from .ignored import KEY_MAX_LENGTH, KEY_MIN_LENGTH, IgnoredShipments, is_valid_key, normalize_tracking_number
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,6 +57,19 @@ async def _async_migrate_unique_ids(hass: HomeAssistant, entry: ConfigEntry) -> 
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
+# Shared by every shipment service. Any user can call the services, so
+# oversized strings and control characters are refused before they reach the
+# stored ignore list, its attribute and the log. The characters are not
+# restricted further: the sensors publish tracking numbers exactly as the
+# courier returns them, and cards send them back unchanged. _tracking_number
+# also requires a few letters or digits, the form the ignore list stores.
+TRACKING_NUMBER_SCHEMA = vol.All(
+    cv.string,
+    vol.Strip,
+    vol.Length(min=KEY_MIN_LENGTH, max=KEY_MAX_LENGTH),
+    vol.Match(r"^[^\x00-\x1f\x7f]+$"),
+)
+
 async def async_setup(hass: HomeAssistant, config: dict):
     """Set up the Shipment Tracking integration."""
     hass.data.setdefault(DOMAIN, {})
@@ -74,8 +87,12 @@ async def async_setup(hass: HomeAssistant, config: dict):
 
     def _tracking_number(call: ServiceCall) -> str:
         tracking_number = call.data[ATTR_TRACKING_NUMBER].strip()
-        if not normalize_tracking_number(tracking_number):
-            raise ServiceValidationError("tracking_number is empty")
+        # The ignore list stores the normalized form (ASCII letters and digits):
+        # require one it can keep and later un-ignore.
+        if not is_valid_key(normalize_tracking_number(tracking_number)):
+            raise ServiceValidationError(
+                f"tracking_number needs {KEY_MIN_LENGTH}-{KEY_MAX_LENGTH} ASCII letters or digits"
+            )
         return tracking_number
 
     async def async_ignore_shipment(call: ServiceCall) -> None:
@@ -115,7 +132,7 @@ async def async_setup(hass: HomeAssistant, config: dict):
                 return
         raise ServiceValidationError(f"No InPost account can fetch shipment {tracking_number}")
 
-    service_schema = vol.Schema({vol.Required(ATTR_TRACKING_NUMBER): cv.string})
+    service_schema = vol.Schema({vol.Required(ATTR_TRACKING_NUMBER): TRACKING_NUMBER_SCHEMA})
     hass.services.async_register(
         DOMAIN, SERVICE_TRACK_SHIPMENT, async_track_shipment, schema=service_schema
     )

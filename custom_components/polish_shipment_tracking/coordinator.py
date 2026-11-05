@@ -124,6 +124,9 @@ class ShipmentCoordinator(DataUpdateCoordinator):
             # Entries from the old SMS login have no expiry: the first request
             # refreshes, InPost rejects the old token and HA asks to sign in again.
             api._expires_at = data.get(CONF_TOKEN_EXPIRES_AT, 0) or 0
+            # What the entry held when this client was built: see
+            # _persist_rotated_auth_if_changed.
+            self._saved_auth = (api._token, api._refresh_token, api._expires_at)
             return api
             
         elif self.courier == "dpd":
@@ -132,6 +135,9 @@ class ShipmentCoordinator(DataUpdateCoordinator):
             api._token = token
             api._refresh_token = refresh_token
             api._expires_at = data.get(CONF_TOKEN_EXPIRES_AT, 0) or 0
+            # What the entry held when this client was built: see
+            # _persist_rotated_auth_if_changed.
+            self._saved_auth = (api._token, api._refresh_token, api._expires_at)
             return api
             
         elif self.courier == "dhl":
@@ -219,7 +225,7 @@ class ShipmentCoordinator(DataUpdateCoordinator):
         """Fetch data from API."""
         try:
             parcels = await self._fetch_parcels_with_retry()
-            self._persist_inpost_auth_if_changed()
+            self._persist_rotated_auth_if_changed()
             self._reconcile_ignore_list(parcels)
             filtered = self._filter_active_parcels(parcels)
             return filtered
@@ -245,6 +251,11 @@ class ShipmentCoordinator(DataUpdateCoordinator):
                 ) from err
             _LOGGER.error("Error fetching data for %s: %s", self.courier, err)
             raise UpdateFailed(f"Error communicating with API: {err}")
+        finally:
+            # InPost and DPD renew short-lived access tokens in-line, and InPost
+            # replaces the refresh token on every refresh: save them even when
+            # the poll failed after the refresh.
+            self._persist_rotated_auth_if_changed()
 
     async def _fetch_parcels_with_retry(self):
         """Fetch parcels and retry once if unauthorized."""
@@ -917,7 +928,7 @@ class ShipmentCoordinator(DataUpdateCoordinator):
         """
         try:
             parcel = await self._fetch_single_parcel_with_retry(tracking_number)
-            self._persist_inpost_auth_if_changed()
+            self._persist_rotated_auth_if_changed()
         except Exception as err:
             _LOGGER.debug(
                 "Single parcel refresh failed for %s %s, falling back to full refresh: %s",
@@ -995,23 +1006,43 @@ class ShipmentCoordinator(DataUpdateCoordinator):
             return
 
         self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+        if self.courier in ("inpost", "dpd"):
+            self._saved_auth = (self.api._token, self.api._refresh_token, self.api._expires_at)
 
-    def _persist_inpost_auth_if_changed(self):
-        """Save InPost tokens renewed in-line by the API client.
+    def _persist_rotated_auth_if_changed(self):
+        """Save InPost / DPD tokens renewed in-line by the API client.
 
-        The OAuth refresh token is replaced on every refresh, so a renewed
-        token that is not saved would force a new sign-in after a restart.
+        Both renew short-lived access tokens during normal polls, and InPost
+        replaces the refresh token on every refresh. Tokens that are not saved
+        force a new sign-in after a restart.
+
+        The entry is written only while it still holds what this coordinator
+        loaded or last saved: when a reauth flow has written new tokens (and is
+        reloading the entry), this client's older ones must not overwrite them.
         """
-        if self.courier != "inpost":
+        if self.courier not in ("inpost", "dpd"):
             return
-        new_data = {
-            **self.entry.data,
-            CONF_TOKEN: self.api._token,
-            CONF_REFRESH_TOKEN: self.api._refresh_token,
-            CONF_TOKEN_EXPIRES_AT: self.api._expires_at,
-        }
-        if new_data != self.entry.data:
-            self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+        data = self.entry.data
+        stored = (
+            data.get(CONF_TOKEN),
+            data.get(CONF_REFRESH_TOKEN),
+            data.get(CONF_TOKEN_EXPIRES_AT, 0) or 0,
+        )
+        if stored != getattr(self, "_saved_auth", stored):
+            return
+        current = (self.api._token, self.api._refresh_token, self.api._expires_at)
+        if current == stored or not self.api._refresh_token:
+            return
+        self.hass.config_entries.async_update_entry(
+            self.entry,
+            data={
+                **data,
+                CONF_TOKEN: current[0],
+                CONF_REFRESH_TOKEN: current[1],
+                CONF_TOKEN_EXPIRES_AT: current[2],
+            },
+        )
+        self._saved_auth = current
 
     def _persist_gls_auth_if_changed(self):
         """Persist GLS auth/session changes made during automatic refresh."""

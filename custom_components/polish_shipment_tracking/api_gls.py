@@ -13,6 +13,8 @@ from urllib.parse import quote, urlencode, urljoin
 
 import aiohttp
 
+from .api_helpers import error_detail
+
 
 class GlsApi:
     """Client for the myGLS mobile API."""
@@ -82,7 +84,7 @@ class GlsApi:
         )
         login_response = _try_json(text)
         if not isinstance(login_response, dict) or login_response.get("status") != "200":
-            raise Exception(f"GLS login failed: {status} - {login_response}")
+            raise Exception(f"GLS login failed: {status} - {error_detail(text)}")
 
         confirmed_url = (
             f"{self.AZURE_BASE_URL}{settings['hosts']['tenant']}/api/{settings['api']}/confirmed?"
@@ -185,7 +187,7 @@ class GlsApi:
                 text = await resp.text()
                 body = _try_json(text)
                 if resp.status >= 400:
-                    raise Exception(f"GLS API Error: {resp.status} - {text}")
+                    raise Exception(f"GLS API Error: {resp.status} - {error_detail(text)}")
                 return body
 
     async def _refresh_if_needed(self) -> None:
@@ -229,7 +231,9 @@ class GlsApi:
                 text = await resp.text()
                 body = _try_json(text)
                 if resp.status >= 400:
-                    raise Exception(f"GLS token request failed: {resp.status} - {text}")
+                    # error_detail keeps the OAuth error (invalid_grant), on
+                    # which the coordinator asks to sign in again.
+                    raise Exception(f"GLS token request failed: {resp.status} - {error_detail(text)}")
                 if not isinstance(body, dict):
                     raise Exception("GLS token response was not JSON")
                 return body

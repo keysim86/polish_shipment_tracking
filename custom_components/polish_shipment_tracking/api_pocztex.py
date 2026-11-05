@@ -5,7 +5,7 @@ import secrets
 import time
 import urllib.parse
 
-from .api_helpers import request_json
+from .api_helpers import error_detail, request_json
 
 """
 Authorization is basically:
@@ -152,9 +152,8 @@ class PocztexApi:
                             return self._extract_code(next_resolved)
 
             body = await resp.text()
-            snippet = " ".join(body.split())[:500] if body else ""
             raise Exception(
-                f"Pocztex login failed. Status {resp.status}. Body: {snippet}"
+                f"Pocztex login failed. Status {resp.status}. Body: {error_detail(body)}"
             )
 
     def _extract_code(self, redirect_url):
