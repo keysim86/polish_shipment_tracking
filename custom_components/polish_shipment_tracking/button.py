@@ -125,7 +125,8 @@ def _should_add_runtime_entity(
         return False
 
     # Registry entry exists for this account but runtime state is missing.
-    return entity_id not in hass.states
+    # hass.states.get(): StateMachine is no longer a container in HA 2026.11 (`in hass.states` raises TypeError).
+    return hass.states.get(entity_id) is None
 
 
 def _get_refresh_all_unique_id(coordinator: ShipmentCoordinator) -> str:
